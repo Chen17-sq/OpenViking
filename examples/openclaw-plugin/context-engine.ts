@@ -357,26 +357,6 @@ function prependRecallToLatestUserMessage(messages: AgentMessage[], recallBlock:
   return prependRecallAtIndex(messages, messages.length - 1, recallBlock);
 }
 
-function injectRecallIntoContext(messages: AgentMessage[], recallBlock: string): AgentMessage[] {
-  const latest = messages.at(-1);
-  if (latest?.role === "user" && !hasAutoRecallBlock(latest)) {
-    return prependRecallToLatestUserMessage(messages, recallBlock);
-  }
-
-  const firstUserIndex = messages.findIndex((msg) => msg.role === "user" && !hasAutoRecallBlock(msg));
-  if (firstUserIndex >= 0) {
-    return prependRecallAtIndex(messages, firstUserIndex, recallBlock);
-  }
-
-  return [
-    {
-      role: "user",
-      content: recallBlock,
-    },
-    ...messages,
-  ];
-}
-
 function emitDiag(log: Logger, stage: string, sessionId: string, data: Record<string, unknown>, enabled = true): void {
   if (!enabled) return;
   log.info(`openviking: diag ${JSON.stringify({ ts: Date.now(), stage, sessionId, data })}`);
@@ -1356,42 +1336,6 @@ export function createMemoryOpenVikingContextEngine(params: {
     });
   }
 
-  function emptyAssembleRecall(): AssembleRecall {
-    return { memoryCount: 0, estimatedTokens: 0, queryChars: 0 };
-  }
-
-  function assembleRecallOnlyResult(params: {
-    ovSessionId: string;
-    reason: string;
-    baseMessages: AgentMessage[];
-    originalTokens: number;
-    recall: AssembleRecall;
-    recallBlock: string;
-    queryInput: RecallQueryInput;
-    peerId?: string;
-    sender: ResolvedSender;
-    extra?: Record<string, unknown>;
-  }): AssembleResult {
-    const withRecall = injectRecallIntoContext(params.baseMessages, params.recallBlock);
-    const estimatedTokens = roughEstimate(withRecall);
-    diag("assemble_result", params.ovSessionId, {
-      passthrough: false,
-      reason: params.reason,
-      ...(params.extra ?? {}),
-      outputMessagesCount: withRecall.length,
-      inputTokenEstimate: params.originalTokens,
-      estimatedTokens,
-      ...recallDiagFields({
-        recall: params.recall,
-        queryInput: params.queryInput,
-        peerId: params.peerId,
-        sender: params.sender,
-      }),
-      messages: messageDigest(withRecall),
-    });
-    return { messages: withRecall, estimatedTokens };
-  }
-
   return {
     info: {
       id,
@@ -1512,74 +1456,13 @@ export function createMemoryOpenVikingContextEngine(params: {
         const client = await getClient();
         const routingRef = assembleParams.sessionId ?? sessionKey ?? OVSessionId;
         const agentId = resolveAgentId(routingRef, sessionKey, OVSessionId);
-        const peerId = resolveAssembleRecallPeerId(agentId, sender);
-        const recallQueryInput = resolveRecallQueryInput({
-          latestMessage,
-          prompt: assembleParams.prompt,
-          senderName: sender.senderName,
-          preferPrompt: true,
-        });
-        const hasInjectedRecall = messages.some((message) => hasAutoRecallBlock(message));
-        let recall = emptyAssembleRecall();
-        if (cfg.autoRecall && !hasInjectedRecall) {
-          try {
-            recall = await buildRecallForAssemble({
-              ovSessionId: OVSessionId,
-              agentId,
-              peerId,
-              queryInput: recallQueryInput,
-              client,
-            });
-          } catch (recallErr) {
-            logger.warn?.(`openviking: auto-recall failed: ${String(recallErr)}`);
-            diag("assemble_recall_failed", OVSessionId, {
-              error: String(recallErr),
-              querySource: recallQueryInput.source,
-              peerId: peerId ?? null,
-              senderSource: sender.source,
-            });
-          }
-        }
-        let ctx;
-        try {
-          ctx = await client.getSessionContext(OVSessionId, tokenBudget, agentId);
-        } catch (ctxErr) {
-          if (recall.block) {
-            return assembleRecallOnlyResult({
-              ovSessionId: OVSessionId,
-              reason: "recall_only_context_unavailable",
-              baseMessages: messages,
-              originalTokens,
-              recall,
-              recallBlock: recall.block,
-              queryInput: recallQueryInput,
-              peerId,
-              sender,
-              extra: { contextError: String(ctxErr) },
-            });
-          }
-          throw ctxErr;
-        }
+        const ctx = await client.getSessionContext(OVSessionId, tokenBudget, agentId);
 
         const preAbstracts = ctx?.pre_archive_abstracts ?? [];
         const hasArchives = !!ctx?.latest_archive_overview || preAbstracts.length > 0;
         const activeCount = ctx?.messages?.length ?? 0;
 
         if (!ctx || (!hasArchives && activeCount === 0)) {
-          if (recall.block) {
-            return assembleRecallOnlyResult({
-              ovSessionId: OVSessionId,
-              reason: "recall_only_no_ov_data",
-              baseMessages: messages,
-              originalTokens,
-              recall,
-              recallBlock: recall.block,
-              queryInput: recallQueryInput,
-              peerId,
-              sender,
-              extra: { archiveCount: 0, activeCount: 0 },
-            });
-          }
           return assemblePassthrough(OVSessionId, "no_ov_data", messages, originalTokens, {
             archiveCount: 0, activeCount: 0,
           });
@@ -1604,9 +1487,7 @@ export function createMemoryOpenVikingContextEngine(params: {
           });
         }
 
-        const outputMessages = recall.block
-          ? injectRecallIntoContext(sanitized, recall.block)
-          : sanitized;
+        const outputMessages = sanitized;
         const assembledTokens = roughEstimate(outputMessages) + instruction.tokens;
         const tokensSaved = originalTokens - assembledTokens;
         const savingPct = originalTokens > 0 ? Math.round((tokensSaved / originalTokens) * 100) : 0;
@@ -1625,7 +1506,9 @@ export function createMemoryOpenVikingContextEngine(params: {
           sessionTokens: session.tokens,
           sessionBudget: budgets.sessionContext,
           reservedBudget: budgets.reserved,
-          ...recallDiagFields({ recall, queryInput: recallQueryInput, peerId, sender }),
+          senderIdFound: sender.found,
+          senderId: sender.senderId ?? null,
+          senderSource: sender.source,
           messages: messageDigest(outputMessages),
         });
 
