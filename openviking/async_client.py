@@ -367,6 +367,7 @@ class AsyncOpenViking:
         limit: int = 10,
         score_threshold: Optional[float] = None,
         filter: Optional[Dict] = None,
+        tags: Optional[List[str]] = None,
         telemetry: TelemetryRequest = False,
         since: Optional[str] = None,
         until: Optional[str] = None,
@@ -397,6 +398,7 @@ class AsyncOpenViking:
             limit=limit,
             score_threshold=score_threshold,
             filter=filter,
+            tags=tags,
             telemetry=telemetry,
             since=since,
             until=until,
@@ -412,6 +414,7 @@ class AsyncOpenViking:
         limit: int = 10,
         score_threshold: Optional[float] = None,
         filter: Optional[Dict] = None,
+        tags: Optional[List[str]] = None,
         telemetry: TelemetryRequest = False,
         since: Optional[str] = None,
         until: Optional[str] = None,
@@ -427,6 +430,7 @@ class AsyncOpenViking:
             limit=limit,
             score_threshold=score_threshold,
             filter=filter,
+            tags=tags,
             telemetry=telemetry,
             since=since,
             until=until,
@@ -467,6 +471,24 @@ class AsyncOpenViking:
             uri=uri,
             content=content,
             mode=mode,
+            wait=wait,
+            timeout=timeout,
+            telemetry=telemetry,
+        )
+
+    async def set_tags(
+        self,
+        uri: str,
+        tags: List[str],
+        wait: bool = False,
+        timeout: Optional[float] = None,
+        telemetry: TelemetryRequest = False,
+    ) -> Dict[str, Any]:
+        """Replace explicit retrieval tags for a file or directory."""
+        await self._ensure_initialized()
+        return await self._client.set_tags(
+            uri=uri,
+            tags=tags,
             wait=wait,
             timeout=timeout,
             telemetry=telemetry,

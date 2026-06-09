@@ -387,6 +387,20 @@ enum Commands {
         #[arg(long)]
         timeout: Option<f64>,
     },
+    /// [Data] Replace explicit retrieval tags for a file or directory
+    SetTags {
+        /// Viking URI
+        uri: String,
+        /// Comma-separated tags, e.g. project-a,team-x
+        #[arg(long = "tags", value_delimiter = ',')]
+        tags: Vec<String>,
+        /// Wait for async processing to finish
+        #[arg(long, default_value = "false")]
+        wait: bool,
+        /// Optional wait timeout in seconds
+        #[arg(long)]
+        timeout: Option<f64>,
+    },
     /// [Data] Download file to local path (supports binaries/images)
     Get {
         /// Viking URI
@@ -421,6 +435,9 @@ enum Commands {
         /// Only include results with specific level(s) (0=abstract, 1=overview, 2=file)
         #[arg(short = 'L', long = "level", value_delimiter = ',')]
         level: Option<Vec<i32>>,
+        /// Only include results matching any of these explicit tags
+        #[arg(long = "tags", value_delimiter = ',')]
+        tags: Option<Vec<String>>,
         /// Limit memory retrieval to this peer plus the current user memory
         #[arg(long = "peer-id")]
         peer_id: Option<String>,
@@ -455,6 +472,9 @@ enum Commands {
         /// Only include results with specific level(s) (0=abstract, 1=overview, 2=file)
         #[arg(short = 'L', long = "level", value_delimiter = ',')]
         level: Option<Vec<i32>>,
+        /// Only include results matching any of these explicit tags
+        #[arg(long = "tags", value_delimiter = ',')]
+        tags: Option<Vec<String>>,
         /// Limit memory retrieval to this peer plus the current user memory
         #[arg(long = "peer-id")]
         peer_id: Option<String>,
@@ -2246,6 +2266,12 @@ async fn main() {
             handlers::handle_write(uri, content, from_file, effective_mode, wait, timeout, ctx)
                 .await
         }
+        Commands::SetTags {
+            uri,
+            tags,
+            wait,
+            timeout,
+        } => handlers::handle_set_tags(uri, tags, wait, timeout, ctx).await,
         Commands::Reindex { uri, mode, wait } => {
             handlers::handle_reindex(uri, mode, wait, ctx).await
         }
@@ -2258,10 +2284,11 @@ async fn main() {
             after,
             before,
             level,
+            tags,
             peer_id,
         } => {
             handlers::handle_find(
-                query, uri, node_limit, threshold, after, before, level, peer_id, ctx,
+                query, uri, node_limit, threshold, after, before, level, tags, peer_id, ctx,
             )
             .await
         }
@@ -2274,10 +2301,21 @@ async fn main() {
             after,
             before,
             level,
+            tags,
             peer_id,
         } => {
             handlers::handle_search(
-                query, uri, session_id, node_limit, threshold, after, before, level, peer_id, ctx,
+                query,
+                uri,
+                session_id,
+                node_limit,
+                threshold,
+                after,
+                before,
+                level,
+                tags,
+                peer_id,
+                ctx,
             )
             .await
         }

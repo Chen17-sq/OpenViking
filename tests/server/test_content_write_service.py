@@ -152,6 +152,7 @@ class _FakeVikingFS:
         self.write_file_calls = []
         self.rm_calls = []
         self.content = {file_uri: "original"}
+        self.vector_store = None
 
     async def stat(self, uri: str, ctx=None):
         del ctx
@@ -182,6 +183,9 @@ class _FakeVikingFS:
         del ctx, lock_handle
         self.rm_calls.append(uri)
         self.content.pop(uri, None)
+
+    def _get_vector_store(self):
+        return self.vector_store
 
 
 class _FakeSemanticQueue:
@@ -830,3 +834,40 @@ async def test_create_mode_regression_append_unchanged(monkeypatch):
     )
 
     assert result["mode"] == "append"
+
+
+@pytest.mark.asyncio
+async def test_set_tags_updates_vector_record(monkeypatch):
+    file_uri = "viking://resources/demo/doc.md"
+    root_uri = "viking://resources/demo"
+    ctx = RequestContext(user=UserIdentifier.the_default_user(), role=Role.USER)
+    fake_vfs = _FakeVikingFS(file_uri=file_uri, root_uri=root_uri)
+    coordinator = ContentWriteCoordinator(viking_fs=fake_vfs)
+
+    class _FakeVectorStore:
+        def __init__(self):
+            self.record = {"uri": file_uri, "context_type": "resource", "level": 2}
+            self.upserts = []
+
+        async def fetch_by_uri(self, uri: str, ctx=None):
+            del ctx
+            assert uri == file_uri
+            return dict(self.record)
+
+        async def upsert(self, data, ctx=None):
+            del ctx
+            self.upserts.append(dict(data))
+            self.record = dict(data)
+            return "rid"
+
+    fake_store = _FakeVectorStore()
+    fake_vfs.vector_store = fake_store
+    monkeypatch.setattr(
+        "openviking.storage.content_write.get_queue_manager",
+        lambda: _FakeQueueManager(_FakeSemanticQueue()),
+    )
+
+    result = await coordinator.set_tags(uri=file_uri, tags=["Project-A", " project-a "], ctx=ctx)
+
+    assert result["tags"] == ["project-a"]
+    assert fake_store.upserts[-1]["search_tags"] == ["project-a"]

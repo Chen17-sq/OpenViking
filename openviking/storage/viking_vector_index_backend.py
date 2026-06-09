@@ -26,6 +26,7 @@ RETRIEVAL_OUTPUT_FIELDS = [
     "abstract",
     "active_count",
     "updated_at",
+    "search_tags",
 ]
 
 LOOKUP_OUTPUT_FIELDS = [
@@ -57,6 +58,7 @@ FETCH_BY_URI_OUTPUT_FIELDS = [
     "name",
     "description",
     "tags",
+    "search_tags",
     "abstract",
     "account_id",
     "owner_user_id",

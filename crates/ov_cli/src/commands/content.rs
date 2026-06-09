@@ -59,6 +59,20 @@ pub async fn write(
     Ok(())
 }
 
+pub async fn set_tags(
+    client: &HttpClient,
+    uri: &str,
+    tags: Vec<String>,
+    wait: bool,
+    timeout: Option<f64>,
+    output_format: OutputFormat,
+    compact: bool,
+) -> Result<()> {
+    let result = client.set_tags(uri, tags, wait, timeout).await?;
+    crate::output::output_success(result, output_format, compact);
+    Ok(())
+}
+
 pub async fn reindex(
     client: &HttpClient,
     uri: &str,

@@ -157,7 +157,9 @@ class FSService:
         directory_uri = VikingURI(abstract_uri).parent.uri
         return directory_uri, abstract_uri
 
-    async def rm(self, uri: str, ctx: RequestContext, recursive: bool = False) -> Optional[Dict[str, Any]]:
+    async def rm(
+        self, uri: str, ctx: RequestContext, recursive: bool = False
+    ) -> Optional[Dict[str, Any]]:
         """Remove resource."""
         uri = validate_viking_uri(uri)
         viking_fs = self._ensure_initialized()
@@ -292,6 +294,26 @@ class FSService:
             content=content,
             ctx=ctx,
             mode=mode,
+            wait=wait,
+            timeout=timeout,
+        )
+
+    async def set_tags(
+        self,
+        uri: str,
+        tags: list[str],
+        ctx: RequestContext,
+        wait: bool = False,
+        timeout: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """Set explicit retrieval tags for a file or directory semantic nodes."""
+        uri = validate_viking_uri(uri)
+        viking_fs = self._ensure_initialized()
+        coordinator = ContentWriteCoordinator(viking_fs=viking_fs)
+        return await coordinator.set_tags(
+            uri=uri,
+            tags=tags,
+            ctx=ctx,
             wait=wait,
             timeout=timeout,
         )

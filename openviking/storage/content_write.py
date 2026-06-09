@@ -18,6 +18,7 @@ from openviking.storage.viking_fs import VikingFS
 from openviking.telemetry import get_current_telemetry
 from openviking.telemetry.request_wait_tracker import get_request_wait_tracker
 from openviking.telemetry.resource_summary import build_queue_status_payload
+from openviking.utils.tags import normalize_search_tags
 from openviking_cli.exceptions import (
     AlreadyExistsError,
     DeadlineExceededError,
@@ -102,6 +103,38 @@ class ContentWriteCoordinator:
             telemetry_id=telemetry_id,
         )
 
+    async def set_tags(
+        self,
+        *,
+        uri: str,
+        tags: list[str],
+        ctx: RequestContext,
+        wait: bool = False,
+        timeout: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        try:
+            normalized_uri = canonicalize_uri(uri, ctx)
+        except NamespaceShapeError as exc:
+            raise InvalidArgumentError(str(exc)) from exc
+
+        normalized_tags = normalize_search_tags(tags)
+        stat = await self._safe_stat(normalized_uri, ctx=ctx)
+        if stat.get("isDir"):
+            return await self._set_directory_tags(
+                uri=normalized_uri,
+                tags=normalized_tags,
+                ctx=ctx,
+                wait=wait,
+                timeout=timeout,
+            )
+        return await self._set_single_uri_tags(
+            uri=normalized_uri,
+            tags=normalized_tags,
+            ctx=ctx,
+            wait=wait,
+            timeout=timeout,
+        )
+
     def _build_write_result(
         self,
         *,
@@ -124,6 +157,33 @@ class ContentWriteCoordinator:
             "mode": mode,
             "written_bytes": written_bytes,
             "content_updated": True,
+            "semantic_status": semantic_status,
+            "vector_status": vector_status,
+            "queue_status": queue_status,
+        }
+
+    def _build_tags_result(
+        self,
+        *,
+        uri: str,
+        updated_uris: list[str],
+        root_uri: str,
+        context_type: str,
+        tags: list[str],
+        wait: bool,
+        queue_status: Optional[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        semantic_status, vector_status = self._refresh_statuses(
+            wait=wait,
+            queue_status=queue_status,
+        )
+        return {
+            "uri": uri,
+            "updated_uris": updated_uris,
+            "root_uri": root_uri,
+            "context_type": context_type,
+            "tags": tags,
+            "tags_updated": True,
             "semantic_status": semantic_status,
             "vector_status": vector_status,
             "queue_status": queue_status,
@@ -517,6 +577,120 @@ class ContentWriteCoordinator:
             if not released:
                 await lock_manager.release(handle)
             raise
+        finally:
+            if wait and telemetry_id:
+                get_request_wait_tracker().cleanup(telemetry_id)
+
+    async def _set_single_uri_tags(
+        self,
+        *,
+        uri: str,
+        tags: list[str],
+        ctx: RequestContext,
+        wait: bool,
+        timeout: Optional[float],
+    ) -> Dict[str, Any]:
+        context_type = context_type_for_uri(uri)
+        root_uri = await self._resolve_root_uri(uri, ctx=ctx)
+        await self._upsert_uri_tags(uri=uri, tags=tags, ctx=ctx)
+        queue_status = await self._refresh_tags_semantics(
+            root_uri=root_uri,
+            changed_uri=uri,
+            context_type=context_type,
+            ctx=ctx,
+            wait=wait,
+            timeout=timeout,
+        )
+        return self._build_tags_result(
+            uri=uri,
+            updated_uris=[uri],
+            root_uri=root_uri,
+            context_type=context_type,
+            tags=tags,
+            wait=wait,
+            queue_status=queue_status,
+        )
+
+    async def _set_directory_tags(
+        self,
+        *,
+        uri: str,
+        tags: list[str],
+        ctx: RequestContext,
+        wait: bool,
+        timeout: Optional[float],
+    ) -> Dict[str, Any]:
+        updated_uris: list[str] = []
+        for child_uri in (f"{uri.rstrip('/')}/.abstract.md", f"{uri.rstrip('/')}/.overview.md"):
+            try:
+                await self._safe_stat(child_uri, ctx=ctx)
+            except NotFoundError:
+                continue
+            await self._upsert_uri_tags(uri=child_uri, tags=tags, ctx=ctx)
+            updated_uris.append(child_uri)
+
+        if not updated_uris:
+            raise NotFoundError(uri, "semantic file")
+
+        context_type = context_type_for_uri(updated_uris[0])
+        queue_status = await self._refresh_tags_semantics(
+            root_uri=uri,
+            changed_uri=updated_uris[0],
+            context_type=context_type,
+            ctx=ctx,
+            wait=wait,
+            timeout=timeout,
+        )
+        return self._build_tags_result(
+            uri=uri,
+            updated_uris=updated_uris,
+            root_uri=uri,
+            context_type=context_type,
+            tags=tags,
+            wait=wait,
+            queue_status=queue_status,
+        )
+
+    async def _upsert_uri_tags(
+        self,
+        *,
+        uri: str,
+        tags: list[str],
+        ctx: RequestContext,
+    ) -> None:
+        store = self._viking_fs._get_vector_store()
+        if not store:
+            raise RuntimeError("Vector store not initialized. Call OpenViking.initialize() first.")
+        record = await store.fetch_by_uri(uri, ctx=ctx)
+        if not record:
+            raise NotFoundError(uri, "vector record")
+        record["search_tags"] = tags
+        await store.upsert(record, ctx=ctx)
+
+    async def _refresh_tags_semantics(
+        self,
+        *,
+        root_uri: str,
+        changed_uri: str,
+        context_type: str,
+        ctx: RequestContext,
+        wait: bool,
+        timeout: Optional[float],
+    ) -> Optional[Dict[str, Any]]:
+        telemetry_id = get_current_telemetry().telemetry_id
+        if wait and telemetry_id:
+            get_request_wait_tracker().register_request(telemetry_id)
+        try:
+            await self._enqueue_semantic_refresh(
+                root_uri=root_uri,
+                changed_uri=changed_uri,
+                context_type=context_type,
+                ctx=ctx,
+                change_type="modified",
+            )
+            if not wait:
+                return None
+            return await self._wait_for_request(telemetry_id=telemetry_id, timeout=timeout)
         finally:
             if wait and telemetry_id:
                 get_request_wait_tracker().cleanup(telemetry_id)
